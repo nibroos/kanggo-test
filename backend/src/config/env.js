@@ -1,4 +1,25 @@
-import 'dotenv/config';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
+
+const backendRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const repoRoot = path.join(backendRoot, '..');
+
+/**
+ * Configuration is layered, most specific first:
+ *
+ *   1. the real environment    (Docker Compose, CI, `DB_HOST=… npm start`)
+ *   2. backend/.env            optional, for backend-only overrides
+ *   3. .env at the repo root   the single file that configures the whole project
+ *
+ * dotenv never overwrites a variable that is already set and, given a list of
+ * paths, keeps the first value it finds — so this order falls out naturally and one
+ * root .env is enough to run the API on the host as well as in a container.
+ */
+dotenv.config({
+  path: [path.join(backendRoot, '.env'), path.join(repoRoot, '.env')],
+  quiet: true,
+});
 
 /**
  * Centralised configuration. Policy §19: configuration comes from environment

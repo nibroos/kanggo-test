@@ -8,6 +8,7 @@ show or touch anybody else's tasks — even if a task id is guessed or forged.
 Vue 3 + Vuetify + Pinia   ──HTTPS/JSON──>   Express + JWT   ──SQL──>   MySQL 8
         (frontend)                             (backend)
 ```
+live on: https://kanggo-fe.nibros.space
 
 **Features**
 
@@ -26,7 +27,6 @@ Vue 3 + Vuetify + Pinia   ──HTTPS/JSON──>   Express + JWT   ──SQL─
 ## Table of contents
 
 - [Tech stack](#tech-stack)
-- [Screenshots](#screenshots)
 - [Quick start with Docker](#quick-start-with-docker)
 - [Development with live reload](#development-with-live-reload)
 - [Manual setup](#manual-setup)
@@ -36,11 +36,13 @@ Vue 3 + Vuetify + Pinia   ──HTTPS/JSON──>   Express + JWT   ──SQL─
   - [Frontend setup](#frontend-setup)
 - [Demo accounts](#demo-accounts)
 - [Environment variables](#environment-variables)
+  - [One file for everything](#one-file-for-everything)
 - [API documentation](#api-documentation)
 - [Testing](#testing)
 - [Project structure](#project-structure)
 - [Design notes](#design-notes)
 - [Troubleshooting](#troubleshooting)
+- [Screenshots](#screenshots)
 
 ---
 
@@ -105,8 +107,7 @@ The fastest path — nothing but Docker required.
 git clone https://github.com/nibroos/kanggo-test.git
 cd kanggo-test
 
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
+cp .env.example .env                  # optional — every value has a default
 
 docker compose up -d --build          # MySQL + API + frontend
 docker compose exec backend npm run migrate
@@ -124,8 +125,11 @@ docker compose exec backend npm run seed   # optional demo data
 Sign in with `ada.lovelace1@example.com` / `Password123!`, or register a new account.
 
 > Host ports are deliberately non-default (3307 / 4088 / 4089) so the stack can run
-> alongside other local projects. Override them with `DB_HOST_PORT`, `BACKEND_PORT`
-> and `FRONTEND_PORT`.
+> alongside other local projects. Override them with `DB_PORT`, `PORT` and
+> `FRONTEND_PORT` in the root `.env`.
+>
+> A single root `.env` configures everything — the compose files, the API and the
+> frontend. See [Environment variables](#environment-variables).
 
 Stop everything (add `-v` to also drop the database volume):
 
@@ -295,16 +299,18 @@ reported as an error instead of silently diverging.
 ### Backend setup
 
 ```bash
+cp .env.example .env      # in the repo root — one file configures everything
+
 cd backend
 npm install
-cp .env.example .env
 ```
 
-Edit `.env` — at minimum the `DB_*` values and two real JWT secrets:
+Edit the root `.env` if needed. The defaults point at the MySQL that
+`docker compose up -d mysql` publishes on `127.0.0.1:3307`; set two real JWT
+secrets while you are there:
 
 ```bash
-# generate one for each secret
-openssl rand -hex 32
+openssl rand -hex 32      # once per secret
 ```
 
 Then:
@@ -324,9 +330,11 @@ than as a 500 on the first request.
 ```bash
 cd frontend
 npm install
-cp .env.example .env      # VITE_API_BASE_URL=http://localhost:4088/api
 npm run dev               # http://localhost:5173
 ```
+
+`VITE_API_BASE_URL` comes from the root `.env` (default
+`http://localhost:4088/api`), so there is nothing else to copy.
 
 Production build:
 
@@ -357,45 +365,83 @@ task lists are completely separate.
 
 ## Environment variables
 
-### Backend (`backend/.env`)
+### One file for everything
+
+There is a single [`.env`](.env.example), in the repository root. It is read by all
+three ways of running the project:
+
+| Consumer | How it reads the root `.env` |
+| -------- | ---------------------------- |
+| **Docker Compose** | Fills the `${...}` placeholders in both compose files, *and* is passed into the containers via `env_file:` |
+| **Backend on the host** (`npm run dev`) | `dotenv`, configured in [`src/config/env.js`](backend/src/config/env.js) |
+| **Frontend on the host** (`npm run dev`) | Vite, via `loadEnv` in [`vite.config.js`](frontend/vite.config.js) |
+
+```bash
+cp .env.example .env
+openssl rand -hex 32      # once per JWT secret
+```
+
+Every value has a working default, so both stacks start without this file at all.
+
+**Values that must differ inside a container are pinned by the compose files.** The
+root `.env` holds `DB_HOST=127.0.0.1` and `DB_PORT=3307`, which is what the API needs
+when you run it on your machine against the published MySQL port. Inside a container
+those addresses point at the container itself, so both compose files override them
+with `DB_HOST=mysql` and `DB_PORT=3306` under `environment:`, which takes precedence
+over `env_file:`. Everything else — pool sizes, bcrypt cost, rate limits, seed
+settings — flows through from the one file unchanged.
+
+Precedence, most specific first:
+
+```
+1. real environment variables   (compose `environment:`, CI, `DB_HOST=… npm start`)
+2. backend/.env, frontend/.env  (optional; not present in this repository)
+3. .env at the repository root
+```
+
+Per-service `.env` files are still honoured if you create one — handy for a local
+override you do not want to share — but nothing here needs them. They are excluded
+by each `.dockerignore`, so they never enter a build context: `/app/.env` does not
+exist in the production image.
+
+Real secrets never belong in the repository: `.env` is gitignored, and only
+`.env.example` is committed.
+
+### Reference
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `NODE_ENV` | `development` | `development` \| `production` \| `test` |
-| `PORT` | `4088` | HTTP port |
+| `NODE_ENV` | `development` | `development` \| `production` \| `test`. Both compose files pin their own value. |
+| `PORT` | `4088` | API port — where it listens, and where Docker publishes it |
 | `LOG_LEVEL` | `info` | pino level: `trace`…`fatal`, or `silent` |
-| `DB_HOST` | — **required** | MySQL host (`mysql` inside Compose) |
-| `DB_PORT` | — **required** | MySQL port (`3307` from the host, `3306` inside Compose) |
-| `DB_USER` | — **required** | MySQL user |
-| `DB_PASSWORD` | `''` | MySQL password |
-| `DB_NAME` | — **required** | Database name |
+| `DB_HOST` | `127.0.0.1` | MySQL host. Compose overrides to `mysql`. |
+| `DB_PORT` | `3307` | MySQL port from the host, and the port Docker publishes. Compose overrides to `3306` inside the network. |
+| `DB_USER` | `task_user` | MySQL user, created in the container |
+| `DB_PASSWORD` | `task_password` | MySQL password |
+| `DB_NAME` | `task_management` | Database name |
+| `MYSQL_ROOT_PASSWORD` | `root_password` | MySQL root account (container setup only) |
 | `DB_POOL_MAX` | `10` | Max open pool connections |
 | `DB_POOL_IDLE` | `10` | Max idle connections |
 | `DB_IDLE_TIMEOUT_MS` | `60000` | Idle connection lifetime |
 | `DB_CONNECT_TIMEOUT_MS` | `10000` | Connection timeout |
 | `DB_QUERY_TIMEOUT_MS` | `8000` | Per-query timeout |
-| `JWT_ACCESS_SECRET` | — **required** | Access-token signing secret (≥ 32 chars in production) |
-| `JWT_REFRESH_SECRET` | — **required** | Refresh-token signing secret — must differ from the access secret |
+| `JWT_ACCESS_SECRET` | placeholder | Access-token secret (≥ 32 chars in production) — **replace for anything beyond local use** |
+| `JWT_REFRESH_SECRET` | placeholder | Refresh-token secret — must differ from the access secret |
 | `JWT_ACCESS_TTL` | `15m` | Access-token lifetime |
 | `JWT_REFRESH_TTL_DAYS` | `30` | Refresh-token lifetime in days |
 | `JWT_ISSUER` | `task-management-api` | `iss` claim |
 | `BCRYPT_ROUNDS` | `12` | bcrypt cost factor |
-| `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowlist — never `*` |
+| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:4088,http://localhost:4089` | Comma-separated allowlist — never `*` |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window |
 | `RATE_LIMIT_GLOBAL_MAX` | `300` | Requests per window per IP |
 | `RATE_LIMIT_AUTH_MAX` | `5` | Failed auth attempts per window per IP |
 | `PAGINATION_DEFAULT_LIMIT` | `10` | Default page size |
 | `PAGINATION_MAX_LIMIT` | `100` | Maximum page size a client may ask for |
-| `SEED_*` | see `.env.example` | Seed volume and demo password |
-
-### Frontend (`frontend/.env`)
-
-| Variable | Default | Description |
-| -------- | ------- | ----------- |
-| `VITE_API_BASE_URL` | `http://localhost:4088/api` | Backend base URL, inlined at build time |
-
-Real secrets never belong in the repository: `.env` is gitignored and only
-`.env.example` is committed.
+| `VITE_API_BASE_URL` | `http://localhost:4088/api` | Where the browser reaches the API. Baked into the bundle by the production build; read at start-up by the dev server. |
+| `FRONTEND_PORT` | `4089` | Host port for the built frontend behind nginx |
+| `VITE_PORT` | `5173` | Host port for the Vite dev server |
+| `VITE_USE_POLLING` | *(empty)* | `true` forces Vite to poll for file changes |
+| `SEED_USER_COUNT` / `SEED_TASKS_MIN` / `SEED_TASKS_MAX` / `SEED_PASSWORD` | `12` / `20` / `30` / `Password123!` | Demo data generated by `npm run seed` |
 
 ---
 
@@ -542,6 +588,7 @@ task-management-system/
 ├── docker/mysql/init/               first-run SQL (test schema)
 ├── docs/screenshots/                README screenshots, generated
 ├── scripts/screenshots.mjs          regenerates them from the running app
+├── .env.example                     the one config file: ports, credentials, secrets
 ├── docker-compose.yml               built images: nginx + API + MySQL
 ├── docker-compose.dev.yml           dev stack: bind mounts, HMR, auto-restart
 ├── Makefile                         make dev / prod / seed / test / reset
@@ -646,7 +693,7 @@ dev overrides, produces a container that is missing `DB_HOST=mysql` and falls ba
 the `127.0.0.1:3307` in `backend/.env` — which inside the container points at the
 container itself, so migrations fail with `ECONNREFUSED` and the process exits.
 
-**Port already in use.** Override `DB_HOST_PORT`, `BACKEND_PORT` or `FRONTEND_PORT`
+**Port already in use.** Override `DB_PORT`, `PORT` or `FRONTEND_PORT`
 for Compose, or `PORT` for a manual backend run.
 
 **`Migration ... was modified after being applied`.** An applied migration file
