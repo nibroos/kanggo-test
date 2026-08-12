@@ -25,7 +25,10 @@ Vue 3 + Vuetify + Pinia   ──HTTPS/JSON──>   Express + JWT   ──SQL─
 
 ## Table of contents
 
+- [Tech stack](#tech-stack)
+- [Screenshots](#screenshots)
 - [Quick start with Docker](#quick-start-with-docker)
+- [Development with live reload](#development-with-live-reload)
 - [Manual setup](#manual-setup)
   - [Prerequisites](#prerequisites)
   - [Database setup](#database-setup)
@@ -37,8 +40,60 @@ Vue 3 + Vuetify + Pinia   ──HTTPS/JSON──>   Express + JWT   ──SQL─
 - [Testing](#testing)
 - [Project structure](#project-structure)
 - [Design notes](#design-notes)
-- [Policy compliance and deviations](#policy-compliance-and-deviations)
 - [Troubleshooting](#troubleshooting)
+
+---
+
+## Tech stack
+
+Versions are the ones this project was built and verified against.
+
+### Backend
+
+| Layer | Choice | Version | Why |
+| ----- | ------ | ------- | --- |
+| Runtime | **Node.js** | 22 LTS | Required by the spec |
+| Framework | **Express** | 4.22 | Required by the spec; small, explicit middleware model |
+| Database | **MySQL** | 8.4 | Required by the spec |
+| Driver | **mysql2** (`/promise`) | 3.23 | Promise API, real connection pooling, parameter binding |
+| Query style | Hand-written SQL, no ORM | — | Policy §1.3 reserves raw SQL for pagination, search and aggregates; the rest of the surface is small enough that an ORM would add indirection without removing work |
+| Auth | **jsonwebtoken** | 9.0 | JWT access tokens plus rotating refresh tokens |
+| Password hashing | **bcrypt** | 5.1 | Required by the spec; cost factor 12 |
+| Validation | **zod** | 3.25 | Schemas sanitise *and* validate, and map cleanly onto per-field API errors |
+| Security headers | **helmet** | 8.3 | X-Content-Type-Options, X-Frame-Options, Referrer-Policy, HSTS |
+| CORS | **cors** | 2.8 | Explicit origin allowlist, never `*` |
+| Rate limiting | **express-rate-limit** | 7.5 | 5 failed credential attempts/min, 300 req/min globally |
+| Compression | **compression** | 1.8 | gzip on JSON responses |
+| Logging | **pino** + **pino-http** | 9.14 / 10.5 | Structured JSON logs with request id, user id, latency; secrets redacted |
+| Config | **dotenv** | 16.6 | Environment variables, validated at startup |
+| API docs | **swagger-ui-express** + **yaml** | 5.0 / 2.9 | Serves `docs/openapi.yaml` at `/api/docs` |
+| Migrations | Custom runner (`scripts/migrate.js`) | — | ~120 lines over plain `.sql` files with checksums — no migration framework needed for four tables |
+| Dev reload | **nodemon** | 3.1 | Polling watcher — reliable through a Docker bind mount on any host OS |
+| Tests | **vitest** + **supertest** | 2.1 / 7.2 | Unit tests plus real HTTP integration tests against MySQL |
+
+### Frontend
+
+| Layer | Choice | Version | Why |
+| ----- | ------ | ------- | --- |
+| Framework | **Vue 3** (Composition API, `<script setup>`) | 3.5 | Required by the spec |
+| UI library | **Vuetify 3** | 3.13 | Required by the spec; Material components with responsive and a11y behaviour built in |
+| State | **Pinia** | 2.3 | Required by the spec; setup-style stores for auth, tasks and UI feedback |
+| Routing | **Vue Router** | 4.6 | History mode with an auth guard on protected routes |
+| HTTP | **axios** | 1.19 | One instance with interceptors for bearer tokens, error shaping and transparent token refresh |
+| Icons | **@mdi/font** | 7.4 | Material Design Icons, self-hosted |
+| Build | **Vite** + **vite-plugin-vuetify** | 6.4 / 2.1 | Fast dev server; the plugin tree-shakes unused Vuetify components |
+| Styling | Vuetify theming + scoped CSS | — | Light and dark palettes defined once in `plugins/vuetify.js` |
+| Tests | **vitest** + **@vue/test-utils** + **jsdom** | 2.1 / 2.4 / 25 | Component, store and full app-boot tests |
+
+### Infrastructure and tooling
+
+| Concern | Choice | Notes |
+| ------- | ------ | ----- |
+| Containers | **Docker Compose** | MySQL 8.4, backend, and the frontend behind nginx |
+| Dev environment | **Docker Compose** (`docker-compose.dev.yml`) + **Makefile** | `make dev` — bind-mounted source, HMR on the frontend, auto-restart on the API |
+| Web server | **nginx** 1.27 alpine | Serves the built SPA with history fallback, gzip, long-lived asset caching and security headers |
+| API docs | **OpenAPI 3.0** + **Postman v2.1** | `backend/docs/` |
+| Screenshots | **Puppeteer** (`scripts/screenshots.mjs`) | Regenerates every image in this README from the running app |
 
 ---
 
@@ -77,6 +132,99 @@ Stop everything (add `-v` to also drop the database volume):
 ```bash
 docker compose down
 ```
+
+> This stack builds the code into images, which is right for a demo but means a
+> rebuild per change. For actual development use
+> [the live-reload stack](#development-with-live-reload) — `make dev`.
+
+---
+
+## Development with live reload
+
+The stack in [Quick start](#quick-start-with-docker) bakes the code into images, so
+every change needs a rebuild. For day-to-day work use the development stack
+instead: the source is bind-mounted, the API restarts on save, and the frontend
+hot-swaps modules in the browser without losing page state.
+
+```bash
+make dev            # or: docker compose -f docker-compose.dev.yml up -d --build
+make seed           # optional demo data, once the stack is up
+make dev-logs       # follow both services
+```
+
+| Service | URL | Behaviour on save |
+| ------- | --- | ----------------- |
+| Frontend | http://localhost:5173 | Vite HMR — the module is swapped in place, no page reload |
+| API | http://localhost:4088/api | nodemon restarts the process (~1s) |
+| MySQL | `localhost:3307` | Same container and volume as the production-like stack |
+
+Migrations run automatically when the backend container starts, so a fresh clone is
+one command from a working environment.
+
+### Make targets
+
+```
+make dev            start the dev stack (live reload)
+make dev-deps       reinstall node_modules in the containers (after a package.json change)
+make dev-logs       tail backend + frontend logs
+make dev-down       stop it (database volume kept)
+
+make prod           the built stack: nginx on :4089
+make prod-down      stop it
+
+make migrate        apply pending migrations
+make seed           load demo data
+make reset          drop the database volume and start clean + seeded
+make db             open a MySQL shell
+
+make test           run both test suites inside the containers
+make screenshots    regenerate the README screenshots
+```
+
+Every target is a plain `docker compose` command — run them by hand if you prefer.
+
+### How the dev stack works
+
+[`docker-compose.dev.yml`](docker-compose.dev.yml) is **self-contained** — pass it on
+its own, never together with `docker-compose.yml`. Both files use the same project
+name, container names and database volume, so the two stacks share their data and
+only one can run at a time; `make dev` and `make prod` switch between them.
+
+- **Separate image stages.** Both Dockerfiles gained a `dev` stage, and each compose
+  file pins its `target` (`dev` / `runtime`) so neither build can drift into the
+  other. The dev images are tagged `:dev` so the two stacks do not overwrite each
+  other's builds.
+- **Database settings come from compose, not from `.env`.** `backend/.env` is inside
+  the bind mount and points at `127.0.0.1:3307` — right from the host, but inside the
+  container that address is the container itself. The compose file sets
+  `DB_HOST=mysql` explicitly, and since `dotenv` never overwrites a variable that is
+  already set, the compose value wins.
+- **Bind mount plus an anonymous volume.** `./backend:/app` makes host edits visible
+  instantly, and a second, anonymous volume on `/app/node_modules` stops the host's
+  copy from shadowing the one built inside the image — which matters because bcrypt
+  compiles a native binding.
+- **Containers run as uid 1000** (the node image's `node` user), so nothing the
+  container writes into your working tree ends up owned by root.
+- **The API watcher polls.** inotify events do not cross a bind mount reliably: they
+  are lost entirely on macOS and Windows hosts, and even on Linux they are missed
+  when an editor saves by writing a temp file and renaming over the original.
+  `node --watch` silently stopped picking up changes after the first restart during
+  testing, so the container runs `nodemon --legacy-watch`. Polling a few directories
+  costs almost nothing and behaves the same on every host.
+- **Vite watches natively** and picks up changes over the bind mount on Linux. If
+  edits are not detected on macOS or Windows, set `VITE_USE_POLLING=true` and
+  restart — [`vite.config.js`](frontend/vite.config.js) reads it.
+
+### Notes
+
+- **After changing `package.json`,** run `make dev-deps`. The anonymous
+  `node_modules` volume survives a plain `up --build`, so a new dependency would
+  otherwise be missing inside the container.
+- **`.env` is optional in dev.** Compose supplies every setting the backend needs. If
+  a `backend/.env` exists it is still read, but compose values win — `dotenv` does
+  not overwrite variables that are already set.
+- **Running without Docker** works too: `npm run dev` in `backend/` (nodemon with
+  native file watching) and in `frontend/`. See [Manual setup](#manual-setup).
 
 ---
 
@@ -206,8 +354,6 @@ After `npm run seed` (12 users, 20–30 tasks each — enough to exercise pagina
 
 Signing in as two different users side by side is the quickest way to see that
 task lists are completely separate.
-
----
 
 ## Environment variables
 
@@ -388,13 +534,17 @@ task-management-system/
 │   │   ├── views/                   Login, Register, Tasks, NotFound
 │   │   ├── components/              TaskCard, TaskFilters, TaskFormDialog, ConfirmDialog…
 │   │   ├── stores/                  Pinia: auth, tasks, ui
-│   │   ├── services/                axios instance, API clients, token storage
+│   │   ├── services/                axios instance, API clients, token + filter storage
 │   │   ├── router/                  routes + auth guard
 │   │   └── utils/                   validation rules, formatting
-│   └── tests/
+│   └── tests/                       components, stores, app boot
 │
 ├── docker/mysql/init/               first-run SQL (test schema)
-├── docker-compose.yml
+├── docs/screenshots/                README screenshots, generated
+├── scripts/screenshots.mjs          regenerates them from the running app
+├── docker-compose.yml               built images: nginx + API + MySQL
+├── docker-compose.dev.yml           dev stack: bind mounts, HMR, auto-restart
+├── Makefile                         make dev / prod / seed / test / reset
 └── README.md
 ```
 
@@ -487,9 +637,123 @@ exist yet. Run the `CREATE DATABASE task_management_test` grant from
 **429 on login.** The rate limiter allows five failed attempts per minute per IP.
 Wait a minute, or raise `RATE_LIMIT_AUTH_MAX` in development.
 
+**`up -d` says "Started" but the backend is missing from `docker ps`.** It started
+and then exited, so only `docker ps -a` shows it. Read the reason with
+`docker compose -f docker-compose.dev.yml logs backend`. The usual cause is mixing
+the two compose files: `docker-compose.dev.yml` is self-contained and must be passed
+**on its own**. Combining it with `docker-compose.yml`, or running the base file with
+dev overrides, produces a container that is missing `DB_HOST=mysql` and falls back to
+the `127.0.0.1:3307` in `backend/.env` — which inside the container points at the
+container itself, so migrations fail with `ECONNREFUSED` and the process exits.
+
 **Port already in use.** Override `DB_HOST_PORT`, `BACKEND_PORT` or `FRONTEND_PORT`
 for Compose, or `PORT` for a manual backend run.
 
 **`Migration ... was modified after being applied`.** An applied migration file
 changed. Restore it and add a new migration instead — or, in development,
 `docker compose down -v` and start over.
+
+---
+
+## Screenshots
+
+Every image below is a real capture of the running application, produced by
+[`scripts/screenshots.mjs`](scripts/screenshots.mjs) driving a headless browser
+against the Docker stack. To regenerate them after a UI change:
+
+```bash
+docker compose up -d                       # stack must be running
+docker compose exec backend npm run seed   # and seeded
+npm i -D puppeteer                         # one-off, downloads its own Chrome
+node scripts/screenshots.mjs               # writes docs/screenshots/*.png
+```
+
+### Authentication
+
+| Login | Validation feedback |
+| --- | --- |
+| ![Login page](docs/screenshots/01-login.png) | ![Empty submit shows per-field errors](docs/screenshots/02-login-validation.png) |
+| Email, password, and a link to registration. | Submitting empty blocks the request and marks both fields. |
+
+| Rejected credentials | Registration |
+| --- | --- |
+| ![Invalid email or password](docs/screenshots/03-login-error.png) | ![Register page with strength meter](docs/screenshots/04-register.png) |
+| A wrong password returns `401` with a message that does not reveal whether the account exists. | Name, email and password, with a live password strength meter. |
+
+### Route protection
+
+| Guard redirects anonymous visitors | After logout |
+| --- | --- |
+| ![Visiting /tasks without a token lands on login](docs/screenshots/05-route-protection.png) | ![Protected page unreachable once signed out](docs/screenshots/19-protected-after-logout.png) |
+| `/tasks` requested with no token: the router guard sends the visitor to `/login`. | The same guard applies once the token is cleared. The API rejects the requests independently. |
+
+### Task list
+
+![Task list](docs/screenshots/06-task-list.png)
+
+The authenticated page: task cards showing title, description, status and deadline,
+sorted by soonest deadline with overdue dates flagged in red. Counts per status sit
+in the filter tabs, and the header shows the total.
+
+### Status filtering
+
+| Pending | In Progress | Done |
+| --- | --- | --- |
+| ![Pending filter](docs/screenshots/07-filter-pending.png) | ![In Progress filter](docs/screenshots/07-filter-in-progress.png) | ![Done filter](docs/screenshots/07-filter-done.png) |
+
+Each tab issues `GET /api/tasks?status=…`; filtering happens in SQL, not in the browser.
+Completed tasks are struck through.
+
+### Search and pagination
+
+| Title search | Page 2 |
+| --- | --- |
+| ![Debounced search by title](docs/screenshots/08-search.png) | ![Server-side pagination](docs/screenshots/14-pagination.png) |
+| Live search, debounced to one request when typing stops. | Server-side pagination over the seeded 20–30 tasks per user. |
+
+### Creating, editing and deleting
+
+| Create dialog | Created |
+| --- | --- |
+| ![New task dialog](docs/screenshots/09-create-dialog.png) | ![Task created confirmation](docs/screenshots/10-create-success.png) |
+| Title required; description, status and deadline optional, with quick-set date chips. | The submit button is disabled while the request is in flight, so a double click cannot create two tasks. |
+
+| Form validation | Edit dialog |
+| --- | --- |
+| ![Title is required](docs/screenshots/11-form-validation.png) | ![Edit dialog pre-filled](docs/screenshots/12-edit-dialog.png) |
+| An empty title never reaches the network — and the API enforces the same rule. | Editing pre-fills the current values and carries the row `version` for conflict detection. |
+
+![Delete confirmation](docs/screenshots/13-delete-confirmation.png)
+
+Deleting always asks first, and names the task being removed.
+
+### Filter persistence
+
+![Filters restored after a reload](docs/screenshots/15-filters-persisted.png)
+
+The Pinia store writes the status tab, search term, sort order and page to
+`localStorage`. This is the page immediately after a browser refresh — the Pending
+filter is still applied.
+
+### Theme and responsive layout
+
+| Dark theme | Mobile (414 × 896) |
+| --- | --- |
+| ![Dark theme](docs/screenshots/16-dark-mode.png) | ![Mobile layout](docs/screenshots/17-responsive-mobile.png) |
+| Follows the operating system preference, with a manual toggle that is remembered. | Filter tabs collapse into a select, cards stack to one column, and logout moves into the avatar menu. |
+
+### Logout and error states
+
+| Signed out | Unknown route |
+| --- | --- |
+| ![Back at the login page after logout](docs/screenshots/18-logout.png) | ![404 page](docs/screenshots/20-not-found.png) |
+| Logout clears the client token and revokes the refresh token server-side. | Unmatched routes render a 404 page rather than a blank screen. |
+
+### API documentation
+
+![Swagger UI](docs/screenshots/21-swagger-ui.png)
+
+Swagger UI served by the API itself at `/api/docs`, generated from
+[`backend/docs/openapi.yaml`](backend/docs/openapi.yaml).
+
+---

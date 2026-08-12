@@ -42,6 +42,8 @@ services:
   backend:
     build:
       context: ./backend
+      # Explicit, so adding stages to the Dockerfile can never change what this builds.
+      target: runtime
     container_name: task-backend
     restart: unless-stopped
     depends_on:
@@ -71,6 +73,7 @@ services:
   frontend:
     build:
       context: ./frontend
+      target: runtime
       args:
         # Baked in at build time: Vite inlines env vars into the bundle.
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:4088/api}

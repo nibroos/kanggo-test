@@ -14,7 +14,14 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // 0.0.0.0, so the dev server is reachable when it runs inside a container.
     host: true,
+    watch: {
+      // Bind mounts do not always forward inotify events (macOS, Windows, some
+      // network filesystems). Set VITE_USE_POLLING=true when edits are not picked up.
+      usePolling: process.env.VITE_USE_POLLING === 'true',
+      interval: 300,
+    },
   },
   preview: {
     port: 5173,

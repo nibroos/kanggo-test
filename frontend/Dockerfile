@@ -1,5 +1,26 @@
 # syntax=docker/dockerfile:1
 
+# --- development --------------------------------------------------------------
+# Used by docker-compose.dev.yml: the Vite dev server with hot module replacement.
+# The source is bind-mounted over /app, so edits on the host reach the browser
+# without a rebuild.
+FROM node:22-bookworm-slim AS dev
+WORKDIR /app
+
+# See the backend Dockerfile: running as uid 1000 keeps bind-mounted files owned by
+# the developer rather than by root.
+RUN chown node:node /app
+USER node
+
+COPY --chown=node:node package.json package-lock.json* ./
+RUN npm ci
+
+COPY --chown=node:node . .
+
+EXPOSE 5173
+# --host binds to 0.0.0.0 so the port is reachable from outside the container.
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+
 # --- build ------------------------------------------------------------------
 FROM node:22-bookworm-slim AS build
 WORKDIR /app

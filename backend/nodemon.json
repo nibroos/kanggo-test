@@ -1,0 +1,6 @@
+{
+  "watch": ["src", "migrations", "scripts", ".env"],
+  "ext": "js,json,sql",
+  "ignore": ["tests/**", "docs/**", "node_modules/**"],
+  "delay": 200
+}

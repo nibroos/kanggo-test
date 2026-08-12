@@ -48,9 +48,10 @@ function buildFilters({ userId, status, search }) {
     params.push(status);
   }
   if (search) {
-    where.push('title LIKE ?');
+    where.push('(title LIKE ? OR description LIKE ?)');
     // Escape LIKE wildcards so a literal % or _ in the search term stays literal.
-    params.push(`%${search.replace(/[\\%_]/g, (char) => `\\${char}`)}%`);
+    const escapedSearch = `%${search.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+    params.push(escapedSearch, escapedSearch);
   }
 
   return { whereSql: where.join(' AND '), params };

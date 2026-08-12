@@ -1,0 +1,125 @@
+# ---------------------------------------------------------------------------
+# Development stack: live reload on both sides, no rebuild between edits.
+#
+#   docker compose -f docker-compose.dev.yml up -d --build
+#
+# or simply `make dev`, which is the same command.
+#
+# This file is SELF-CONTAINED — do not combine it with docker-compose.yml.
+# It defines the whole stack on its own:
+#
+#   mysql     same image, same container name and same volume as the built stack,
+#             so switching between the two keeps your data
+#   backend   source bind-mounted, nodemon restarts on save, migrations on start
+#   frontend  Vite dev server with HMR on :5173 instead of nginx on :4089
+#
+# Because both files use the same project name, container names and database
+# volume, only one of the two stacks can run at a time. `make dev` and `make prod`
+# switch between them.
+#
+# Frontend  http://localhost:5173   (hot module replacement)
+# API       http://localhost:4088/api
+# API docs  http://localhost:4088/api/docs
+# ---------------------------------------------------------------------------
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: task-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${DB_NAME:-task_management}
+      MYSQL_USER: ${DB_USER:-task_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-task_password}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - '${DB_HOST_PORT:-3307}:3306'
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # Runs only on first initialisation: creates the schema used by `npm test`.
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-p${MYSQL_ROOT_PASSWORD:-root_password}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  backend:
+    # Distinct tag from the production image. Without it both stacks build to
+    # `kanggo-test-backend:latest` and overwrite each other, so switching between
+    # them would rebuild from scratch every time.
+    image: kanggo-test-backend:dev
+    build:
+      context: ./backend
+      target: dev
+    container_name: task-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 4088
+      # Verbose logs are useful while developing; every SQL timeout, blocked CORS
+      # origin and rate-limit rejection shows up.
+      LOG_LEVEL: debug
+      # These MUST be set here. backend/.env is bind-mounted into the container and
+      # points at 127.0.0.1:3307 — correct from the host, but inside the container
+      # that is the container itself. `mysql` is the service name on the compose
+      # network. (dotenv does not overwrite variables that are already set, so
+      # everything below wins over the mounted .env.)
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-task_user}
+      DB_PASSWORD: ${DB_PASSWORD:-task_password}
+      DB_NAME: ${DB_NAME:-task_management}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev_access_secret_change_me_0123456789abcdef}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev_refresh_secret_change_me_0123456789abcdef}
+      # The Vite dev server's origin has to be allowed explicitly (never `*`).
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:4088,http://localhost:4089}
+    ports:
+      - '${BACKEND_PORT:-4088}:4088'
+    volumes:
+      # Source from the host: edits are visible inside the container immediately.
+      - ./backend:/app
+      # Anonymous volume: keeps the container's own node_modules (built for this
+      # image, including bcrypt's native binding) from being shadowed by the host's.
+      - /app/node_modules
+    # Apply pending migrations before starting, so a fresh clone is one command away.
+    # `dev:poll` is nodemon in polling mode — see the Dockerfile's dev stage.
+    command: sh -c "npm run migrate && exec npm run dev:poll"
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:4088/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  frontend:
+    image: kanggo-test-frontend:dev
+    build:
+      context: ./frontend
+      target: dev
+    container_name: task-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # Vite exposes VITE_-prefixed variables from the environment at dev-server
+      # start, so no rebuild is needed to point the app at a different API.
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:4088/api}
+      # Bind-mounted filesystems do not always forward inotify events (notably on
+      # macOS and Windows). Set VITE_USE_POLLING=true if edits are not picked up.
+      VITE_USE_POLLING: ${VITE_USE_POLLING:-}
+    ports:
+      - '${VITE_PORT:-5173}:5173'
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  mysql_data:
