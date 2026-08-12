@@ -1,0 +1,522 @@
+openapi: 3.0.3
+
+info:
+  title: Task Management API
+  version: 1.0.0
+  description: |
+    REST API for the Task Management System.
+
+    Every task belongs to exactly one user. Task endpoints require a valid JWT
+    access token and only ever operate on tasks owned by the authenticated user —
+    a task id belonging to somebody else is reported as `404 Not Found`, so the API
+    never confirms that the id exists.
+
+    ### Authentication flow
+
+    1. `POST /api/auth/register` or `POST /api/auth/login` returns an access token
+       (15 minutes) and a refresh token (30 days).
+    2. Send the access token as `Authorization: Bearer <accessToken>`.
+    3. When the access token expires the API answers `401`; call
+       `POST /api/auth/refresh` with the refresh token to obtain a new pair.
+       Refresh tokens rotate: the presented token is revoked as the new one is issued.
+    4. `POST /api/auth/logout` revokes the refresh token server-side. The client
+       also drops its stored tokens.
+
+    ### Response envelope
+
+    Success responses are `{ success, message, data, meta }`.
+    Error responses are `{ success, message, errors }` where `errors` carries
+    per-field messages for validation failures.
+
+servers:
+  - url: http://localhost:4088
+    description: Local development
+  - url: http://localhost:4088/
+    description: Docker compose
+
+tags:
+  - name: Authentication
+    description: Registration, login, token refresh and logout
+  - name: Tasks
+    description: CRUD, status filtering, search and pagination for the caller's own tasks
+  - name: System
+    description: Liveness and readiness probes
+
+paths:
+  /api/auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register a new user
+      description: Creates an account, hashes the password with bcrypt and returns a token pair.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 100, example: Ada Lovelace }
+                email: { type: string, format: email, maxLength: 191, example: ada@example.com }
+                password: { type: string, minLength: 8, maxLength: 72, example: Password123! }
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Authenticate and receive a token pair
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, example: ada.lovelace1@example.com }
+                password: { type: string, example: Password123! }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401':
+          description: Invalid credentials — identical response whether the email exists or not
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Exchange a refresh token for a new token pair
+      description: |
+        The presented refresh token is revoked and replaced. Replaying an already
+        used token is treated as a leak and revokes every session for that account.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: New token pair issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401':
+          description: Refresh token missing, expired, revoked or replayed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Revoke the current session
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken:
+                  type: string
+                  description: Omit to revoke every active session for the account.
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/auth/me:
+    get:
+      tags: [Authentication]
+      summary: Return the authenticated user
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/tasks:
+    get:
+      tags: [Tasks]
+      summary: List the authenticated user's tasks
+      description: |
+        Returns only tasks owned by the caller. Without `status`, every status is
+        returned. `meta.status_counts` carries the per-status totals used by the
+        filter tabs in the UI.
+      parameters:
+        - name: status
+          in: query
+          description: Filter by status. Omit, or pass `all`, for no filter.
+          schema:
+            type: string
+            enum: [all, pending, in-progress, done]
+          examples:
+            all: { value: all, summary: Every task }
+            pending: { value: pending }
+            inProgress: { value: in-progress }
+            done: { value: done }
+        - name: search
+          in: query
+          description: Case-insensitive substring match on the title.
+          schema: { type: string, maxLength: 200 }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [created_at, updated_at, deadline, title, status]
+            default: deadline
+        - name: sort_dir
+          in: query
+          description: Defaults to soonest-deadline-first. Tasks with no deadline always sort last.
+          schema: { type: string, enum: [asc, desc], default: asc }
+      responses:
+        '200':
+          description: Task page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+    post:
+      tags: [Tasks]
+      summary: Create a task
+      description: The task is always assigned to the authenticated user; a `user_id` in the body is ignored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskCreate' }
+      responses:
+        '201':
+          description: Task created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/tasks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+
+    get:
+      tags: [Tasks]
+      summary: Retrieve one of the caller's tasks
+      responses:
+        '200':
+          description: Task
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+    put:
+      tags: [Tasks]
+      summary: Replace a task
+      description: |
+        Full replacement: omitted optional fields (`description`, `deadline`) are
+        cleared and `status` falls back to `pending`. Use `PATCH` for partial edits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskReplace' }
+      responses:
+        '200':
+          description: Task updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/VersionConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+    patch:
+      tags: [Tasks]
+      summary: Partially update a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskPatch' }
+      responses:
+        '200':
+          description: Task updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/VersionConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+    delete:
+      tags: [Tasks]
+      summary: Delete a task
+      responses:
+        '200':
+          description: Task deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id: { type: integer, example: 42 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /health:
+    get:
+      tags: [System]
+      summary: Health summary including database connectivity
+      security: []
+      responses:
+        '200': { description: Healthy }
+        '503': { description: Degraded — the database is unreachable }
+
+  /live:
+    get:
+      tags: [System]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200': { description: Process is running }
+
+  /ready:
+    get:
+      tags: [System]
+      summary: Readiness probe
+      security: []
+      responses:
+        '200': { description: Ready to serve traffic }
+        '503': { description: Not ready }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    SuccessEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        message: { type: string, example: Tasks retrieved }
+        data: {}
+        meta: { type: object }
+
+    MessageResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data: { nullable: true, example: null }
+
+    ErrorResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        message: { type: string, example: Validation Error }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string, example: title }
+              message: { type: string, example: Title is required }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer, example: 1 }
+        name: { type: string, example: Ada Lovelace }
+        email: { type: string, format: email, example: ada@example.com }
+        created_at: { type: string, format: date-time }
+
+    AuthResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                user: { $ref: '#/components/schemas/User' }
+                accessToken: { type: string, description: JWT, valid for 15 minutes }
+                refreshToken: { type: string, description: JWT, valid for 30 days, rotated on use }
+                tokenType: { type: string, example: Bearer }
+                expiresIn: { type: integer, description: Access token lifetime in seconds, example: 900 }
+
+    Task:
+      type: object
+      properties:
+        id: { type: integer, example: 42 }
+        user_id: { type: integer, example: 1 }
+        title: { type: string, example: Write the README }
+        description: { type: string, nullable: true, example: Include setup instructions }
+        status: { type: string, enum: [pending, in-progress, done], example: pending }
+        deadline: { type: string, format: date, nullable: true, example: '2026-09-01' }
+        version:
+          type: integer
+          example: 1
+          description: Optimistic lock counter — send it back on update to detect concurrent edits.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TaskCreate:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200, example: Write the README }
+        description: { type: string, maxLength: 5000, nullable: true }
+        status: { type: string, enum: [pending, in-progress, done], default: pending }
+        deadline: { type: string, format: date, nullable: true, example: '2026-09-01' }
+
+    TaskReplace:
+      allOf:
+        - $ref: '#/components/schemas/TaskCreate'
+        - type: object
+          properties:
+            version:
+              type: integer
+              description: Version the client edited. Omit to accept last-write-wins.
+
+    TaskPatch:
+      type: object
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 5000, nullable: true }
+        status: { type: string, enum: [pending, in-progress, done] }
+        deadline: { type: string, format: date, nullable: true }
+        version: { type: integer }
+
+    TaskResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Task' }
+
+    TaskListResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/Task' }
+            meta:
+              type: object
+              properties:
+                pagination:
+                  type: object
+                  properties:
+                    page: { type: integer, example: 1 }
+                    limit: { type: integer, example: 10 }
+                    total: { type: integer, example: 26 }
+                    total_pages: { type: integer, example: 3 }
+                    has_next_page: { type: boolean }
+                    has_prev_page: { type: boolean }
+                filters:
+                  type: object
+                  properties:
+                    status: { type: string, example: all }
+                    search: { type: string, nullable: true }
+                    sort_by: { type: string, example: deadline }
+                    sort_dir: { type: string, example: asc }
+                status_counts:
+                  type: object
+                  properties:
+                    all: { type: integer, example: 26 }
+                    pending: { type: integer, example: 12 }
+                    in-progress: { type: integer, example: 7 }
+                    done: { type: integer, example: 7 }
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid or expired access token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: No such task for this user — returned both for a missing id and for another user's task
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    VersionConflict:
+      description: The task was modified by another session since it was loaded
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ValidationError:
+      description: Request failed validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    TooManyRequests:
+      description: Rate limit exceeded (5 failed attempts per minute per IP)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+security:
+  - bearerAuth: []

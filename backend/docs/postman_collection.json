@@ -1,0 +1,256 @@
+{
+  "info": {
+    "name": "Task Management API",
+    "description": "Import into Postman, then run `Auth / Login` first — the token is captured into the collection variables automatically, so every other request is ready to send.\n\nCollection variables:\n- `baseUrl` (default http://localhost:4088)\n- `accessToken`, `refreshToken` — filled in by the auth requests\n- `taskId` — filled in by `Tasks / Create task`",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4088" },
+    { "key": "email", "value": "ada.lovelace1@example.com" },
+    { "key": "password", "value": "Password123!" },
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "taskId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success) {",
+                  "  pm.collectionVariables.set('accessToken', body.data.accessToken);",
+                  "  pm.collectionVariables.set('refreshToken', body.data.refreshToken);",
+                  "}",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api", "auth", "register"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ada Lovelace\",\n  \"email\": \"new.user@example.com\",\n  \"password\": \"Password123!\"\n}"
+            },
+            "description": "Creates an account. The password is hashed with bcrypt; the response carries an access token (15 min) and a refresh token (30 days)."
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success) {",
+                  "  pm.collectionVariables.set('accessToken', body.data.accessToken);",
+                  "  pm.collectionVariables.set('refreshToken', body.data.refreshToken);",
+                  "}",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Refresh token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success) {",
+                  "  pm.collectionVariables.set('accessToken', body.data.accessToken);",
+                  "  pm.collectionVariables.set('refreshToken', body.data.refreshToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/refresh", "host": ["{{baseUrl}}"], "path": ["api", "auth", "refresh"] },
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}" },
+            "description": "Rotates the refresh token. Replaying a token that was already exchanged revokes every session for the account."
+          }
+        },
+        {
+          "name": "Current user",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/auth/me", "host": ["{{baseUrl}}"], "path": ["api", "auth", "me"] }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/logout", "host": ["{{baseUrl}}"], "path": ["api", "auth", "logout"] },
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}" },
+            "description": "Revokes the refresh token server-side. The client discards its stored tokens as well."
+          }
+        },
+        {
+          "name": "Login - wrong password (401)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"definitely-wrong\"\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Tasks",
+      "item": [
+        {
+          "name": "List tasks",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/tasks?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "tasks"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "10" },
+                { "key": "status", "value": "all", "disabled": true },
+                { "key": "search", "value": "deploy", "disabled": true },
+                { "key": "sort_by", "value": "deadline", "disabled": true },
+                { "key": "sort_dir", "value": "asc", "disabled": true }
+              ]
+            },
+            "description": "Returns only the authenticated user's tasks, paginated. `meta.status_counts` holds the per-status totals."
+          }
+        },
+        { "name": "Filter - pending", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/tasks?status=pending", "host": ["{{baseUrl}}"], "path": ["api", "tasks"], "query": [{ "key": "status", "value": "pending" }] } } },
+        { "name": "Filter - in-progress", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/tasks?status=in-progress", "host": ["{{baseUrl}}"], "path": ["api", "tasks"], "query": [{ "key": "status", "value": "in-progress" }] } } },
+        { "name": "Filter - done", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/tasks?status=done", "host": ["{{baseUrl}}"], "path": ["api", "tasks"], "query": [{ "key": "status", "value": "done" }] } } },
+        { "name": "Search by title", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/tasks?search=deploy", "host": ["{{baseUrl}}"], "path": ["api", "tasks"], "query": [{ "key": "search", "value": "deploy" }] } } },
+        {
+          "name": "Create task",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success) pm.collectionVariables.set('taskId', body.data.id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/tasks", "host": ["{{baseUrl}}"], "path": ["api", "tasks"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Write the README\",\n  \"description\": \"Include setup instructions\",\n  \"status\": \"pending\",\n  \"deadline\": \"2026-09-01\"\n}"
+            },
+            "description": "Only `title` is required. The task is assigned to the authenticated user regardless of what the body says."
+          }
+        },
+        {
+          "name": "Get task",
+          "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/tasks/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api", "tasks", "{{taskId}}"] } }
+        },
+        {
+          "name": "Update task (PUT)",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/tasks/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api", "tasks", "{{taskId}}"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Write the README\",\n  \"description\": \"Now finished\",\n  \"status\": \"done\",\n  \"deadline\": \"2026-09-15\",\n  \"version\": 1\n}"
+            },
+            "description": "Full replacement. `version` is the optimistic lock: a stale value returns 409 instead of overwriting a concurrent edit."
+          }
+        },
+        {
+          "name": "Update status (PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/tasks/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api", "tasks", "{{taskId}}"] },
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"in-progress\"\n}" }
+          }
+        },
+        {
+          "name": "Delete task",
+          "request": { "method": "DELETE", "url": { "raw": "{{baseUrl}}/api/tasks/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api", "tasks", "{{taskId}}"] } }
+        },
+        {
+          "name": "Create task - missing title (422)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/tasks", "host": ["{{baseUrl}}"], "path": ["api", "tasks"] },
+            "body": { "mode": "raw", "raw": "{\n  \"description\": \"No title supplied\"\n}" }
+          }
+        },
+        {
+          "name": "List tasks - no token (401)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/tasks", "host": ["{{baseUrl}}"], "path": ["api", "tasks"] }
+          }
+        },
+        {
+          "name": "Another user's task (404)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/tasks/999999", "host": ["{{baseUrl}}"], "path": ["api", "tasks", "999999"] },
+            "description": "Ownership check: a task id that belongs to somebody else answers 404, exactly like an id that does not exist."
+          }
+        }
+      ]
+    },
+    {
+      "name": "System",
+      "item": [
+        { "name": "Health", "request": { "auth": { "type": "noauth" }, "method": "GET", "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] } } },
+        { "name": "Liveness", "request": { "auth": { "type": "noauth" }, "method": "GET", "url": { "raw": "{{baseUrl}}/live", "host": ["{{baseUrl}}"], "path": ["live"] } } },
+        { "name": "Readiness", "request": { "auth": { "type": "noauth" }, "method": "GET", "url": { "raw": "{{baseUrl}}/ready", "host": ["{{baseUrl}}"], "path": ["ready"] } } }
+      ]
+    }
+  ]
+}
